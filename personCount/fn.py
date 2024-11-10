@@ -41,3 +41,5 @@ def text_count(person_enter, person_exit, width, frame):
 
 
 
+
+

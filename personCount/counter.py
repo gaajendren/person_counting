@@ -1,18 +1,20 @@
 import cv2
 import numpy as np
+from torch.profiler import schedule
 from ultralytics import YOLO
-from fn import *
-from config import *
-from deepSort import *
-from flask import Flask, Response
+from personCount.fn import *
+from personCount.config import *
+from personCount.deepSort import *
+from datetime import datetime, time
+from personCount.Database.init import *
+from flask import Flask, Response, Blueprint
+from apscheduler.schedulers.background import BackgroundScheduler
 from flask_socketio import SocketIO
 from flask_cors import CORS
-from datetime import datetime, time
-from Database.occupancy import *
-from Database.init import *
-from flask_sqlalchemy import SQLAlchemy
 import threading
+from personCount.controller import *
 import cvzone
+
 
 app = Flask(__name__)
 
@@ -22,12 +24,15 @@ CORS(app, resources={r"/*": {"origins": "http://127.0.0.1:8000", "supports_crede
 
 init_db(app)
 
-modal = YOLO('/personCount/trained_yolo_model/yolov8s.pt')
+scheduler = BackgroundScheduler()
+
+modal = YOLO('/trained_yolo_model/yolov8s.pt')
 track = DeepSort()
 
 person_enter= {}
-
 person_exit= {}
+
+person_count = 0
 
 latest_enter_frame = None
 latest_exit_frame = None
@@ -54,9 +59,9 @@ def background_image_process(way):
    global counting_active, enter_frame_count, exit_frame_count, error
 
    if way == 'enter' :
-      screen = cv2.VideoCapture('/personCount/test_video/test6.mp4')
+      screen = cv2.VideoCapture('D:/laragon/www/PersonCouting/personCount/test_video/test6.mp4')
    else:
-      screen = cv2.VideoCapture('/personCount/test_video/test6.mp4')
+      screen = cv2.VideoCapture('D:/laragon/www/PersonCouting/personCount/test_video/test6.mp4')
 
    if not screen.isOpened():
       error = 'Error: Could not open video source.'
@@ -70,9 +75,9 @@ def background_image_process(way):
          raise RuntimeError("Error: Could not read video source.")
 
       if way == 'enter':
-         skip, enter_frame_count = frame_limit_skip(enter_frame_count, 30, 2)
+         skip, enter_frame_count = frame_limit_skip(enter_frame_count, 30, 3)
       else:
-         skip, exit_frame_count = frame_limit_skip(exit_frame_count, 30, 2)
+         skip, exit_frame_count = frame_limit_skip(exit_frame_count, 30, 3)
 
       if skip:
          continue
@@ -86,9 +91,8 @@ def background_image_process(way):
          continue
 
 
-
 def person_counting(frame, way, person):
-   global socketio, person_enter,person_exit, latest_enter_frame, latest_exit_frame, counting_active
+   global person_enter,person_exit, latest_enter_frame, latest_exit_frame, counting_active, socketio, person_count
 
    resized_frame = aspect_ratio_resize(frame)
    height, width, _ = resized_frame.shape
@@ -144,31 +148,36 @@ def person_counting(frame, way, person):
 
 
 def encode_frame(frame):
-   _, buffer = cv2.imencode('.jpg', frame)
-   return buffer.tobytes()
 
+    _, buffer = cv2.imencode('.jpg', frame)
+    return buffer.tobytes()
 
 def generate_video(way):
-   global latest_enter_frame, latest_exit_frame
+    global latest_enter_frame, latest_exit_frame
 
-   while counting_active:
-      frame = latest_enter_frame if way == 'enter' else latest_exit_frame
+    while counting_active:
 
-      if frame is None:
-         continue
+        frame = latest_enter_frame if way == 'enter' else latest_exit_frame
 
-      frame_bytes = encode_frame(frame)
-      yield (b'--frame\r\n'
-             b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        if frame is None:
+            continue
+
+        frame_bytes = encode_frame(frame)
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 
-   # cv2.setMouseCallback('i', mouse_coordinate)
+def scheduled_task():
 
-   # for person_id, details in person.items():
-   #    print(f"ID: {person_id}")
-   #    print(f"  Entered: {details.get('entered', False)}")
-   #    print(f"  Faces: {details.get('face', None)}\n")
+   with app.app_context():
+      add_record(person_count)
 
+
+scheduler.add_job(scheduled_task, trigger='cron', hour='8-23,0-4', minute='*/1')
+if not scheduler.running:
+    scheduler.start()
+
+   
 
 @app.route('/current_status', methods=['GET'])
 def status():
@@ -199,6 +208,7 @@ def video_feed_exit():
 
    return Response(generate_video('exit'),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+
 
 if __name__ == '__main__':
 

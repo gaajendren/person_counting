@@ -1,10 +1,10 @@
 # vim: expandtab:ts=4:sw=4
 from __future__ import absolute_import
 import numpy as np
-from deep_sort.deep_sort import kalman_filter
-from deep_sort.deep_sort import linear_assignment
-from deep_sort.deep_sort import iou_matching
-from deep_sort.deep_sort.track import Track
+from personCount.deep_sort.deep_sort import kalman_filter
+from personCount.deep_sort.deep_sort import linear_assignment
+from personCount.deep_sort.deep_sort import iou_matching
+from personCount.deep_sort.deep_sort.track import Track
 
 
 class Tracker:

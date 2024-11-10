@@ -1,7 +1,7 @@
-from deep_sort.deep_sort.tracker import *
-from deep_sort.deep_sort.detection import Detection
-from deep_sort.deep_sort.nn_matching import NearestNeighborDistanceMetric
-from deep_sort.tools import generate_detections
+from personCount.deep_sort.deep_sort.tracker import *
+from personCount.deep_sort.deep_sort.detection import Detection
+from personCount.deep_sort.deep_sort.nn_matching import NearestNeighborDistanceMetric
+from personCount.deep_sort.tools import generate_detections
 import numpy as np
 
 
@@ -15,7 +15,7 @@ class DeepSort:
 
         metrix = NearestNeighborDistanceMetric('cosine', 0.4, 100)
         self.tracker = Tracker(metrix)
-        self.encoder = generate_detections.create_box_encoder('/personCount/modal-data/mars-small128.pb', batch_size=1)
+        self.encoder = generate_detections.create_box_encoder('D:/laragon/www/PersonCouting/personCount/modal-data/mars-small128.pb', batch_size=1)
 
 
 

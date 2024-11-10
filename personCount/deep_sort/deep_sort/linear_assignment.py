@@ -2,7 +2,7 @@
 from __future__ import absolute_import
 import numpy as np
 from scipy.optimize import linear_sum_assignment as linear_assignment
-from deep_sort.deep_sort import kalman_filter
+from personCount.deep_sort.deep_sort import kalman_filter
 
 
 INFTY_COST = 1e+5
