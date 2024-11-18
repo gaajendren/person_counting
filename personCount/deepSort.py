@@ -15,7 +15,7 @@ class DeepSort:
 
         metrix = NearestNeighborDistanceMetric('cosine', 0.4, 100)
         self.tracker = Tracker(metrix)
-        self.encoder = generate_detections.create_box_encoder('D:/laragon/www/PersonCouting/personCount/modal-data/mars-small128.pb', batch_size=1)
+        self.encoder = generate_detections.create_box_encoder('C:/Users/gaaje/PycharmProjects/person_counting/personCount/modal-data/mars-small128.pb', batch_size=1)
 
 
 
