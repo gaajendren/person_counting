@@ -81,16 +81,18 @@ def update_face_enter(enter_person_id, exit_id):
 
 
 
-def upload_face_exit(track_id, best_face, enter_person_id, ):
+def upload_face_exit(track_id, best_face, enter_person_id ):
 
     try:
-        print(f"Uploading PersonExit with track_id: {track_id}, enter_person_id: {enter_person_id}")
+
+        print(f"Uploading PersonExit with track_id: {track_id}")
         embedding_str = json.dumps( best_face[1])
         new_data = PersonExit(track_id=track_id , embedding= embedding_str ,img=best_face[0] ,timestamp=datetime.now())
         db.session.add(new_data)
         db.session.commit()
 
         if enter_person_id is not None:
+            print(f"Updating PersonExit with track_id: {track_id}, enter_person_id: {enter_person_id}")
             exit_person = PersonExit.query.filter_by(track_id= int(track_id)).first()
             if exit_person:
                 print(f"Created PersonExit ID: {exit_person.id}")

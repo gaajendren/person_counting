@@ -26,7 +26,14 @@ def mouse_coordinate(event, x, y, flags, param):
       print(position)
 
 def text_count(person_enter, person_exit, width, frame):
-   count = len(person_enter) - len(person_exit)
+   count_entered = sum(1 for person in person_enter if person["entered"])
+
+
+   count_exited = sum(1 for person in person_exit if person["entered"])
+
+
+   count = count_entered - count_exited
+
    if count < 0:
       count = 0
    text = f'People Count: {count}'
