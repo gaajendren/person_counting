@@ -39,6 +39,8 @@ person_enter= {}
 person_exit= {}
 
 person_count = 0
+person_count_enter = 0
+person_count_exit = 0
 
 enter_uncheck_track_id = []
 exit_uncheck_track_id = []
@@ -112,10 +114,11 @@ def background_image_process(way):
 
 
 def person_counting(frame, way, person , track):
-   global person_enter,person_exit, latest_enter_frame, latest_exit_frame, counting_active, socketio, person_count, image_count
+   global person_enter,person_exit, latest_enter_frame, latest_exit_frame, counting_active, socketio, person_count, image_count, person_count_enter,person_count_exit
 
 
    resized_frame = aspect_ratio_resize(frame)
+   ori_frame = resized_frame.copy()
    height, width, _ = resized_frame.shape
 
    update_check(person, way)
@@ -149,6 +152,11 @@ def person_counting(frame, way, person , track):
              print(f"New person detected: {track_id}")
              person[track_id] = {"entered": False, "face": [], 'checked': False}
 
+             if way == 'enter':
+                 person_count_enter += 1
+             else:
+                 person_count_exit += 1
+
          if line[0][0] < x2 < line[1][0] and y2 > line[0][1]:
 
              print(f"Person {track_id} crossed the line for '{way}'")
@@ -167,8 +175,9 @@ def person_counting(frame, way, person , track):
 
                  # face start
                  face_image = resized_frame[y1:y2, x1:x2]
+                 ori_person = ori_frame[y1:y2, x1:x2]
                  print(f"Adding face image for person in the queue {track_id}...")
-                 face_queue.put((track_id, face_image, way))
+                 face_queue.put((track_id, face_image, way, ori_person))
 
          # end............................
 
@@ -188,7 +197,7 @@ def person_counting(frame, way, person , track):
 
    counting_active = True
 
-   person_count = text_count(person_enter, person_exit ,width, resized_frame)
+   person_count = text_count(person_count_enter, person_count_exit ,width, resized_frame)
 
    socketio.emit('person_count', {'count': person_count, })
 
@@ -258,7 +267,7 @@ def face_detection():
     while True:
         try:
             face_data = face_queue.get(block=True)
-            track_id, face_image,way = face_data
+            track_id, face_image,way, ori_person = face_data
 
             print(f"Processing face data for track_id {track_id} in {way} direction...")
 
@@ -287,10 +296,10 @@ def face_detection():
                     cropped_face = face_image[fy:fy2, fx:fx2]
 
                     try:
-                        embedding = represent(cropped_face, model_name='Facenet', enforce_detection=False)[0]["embedding"]
+                        embedding = represent(cropped_face, model_name='Dlib', enforce_detection=False)[0]["embedding"]
                         image_count += 1
                         file_name = f'{track_id}{image_count}{way}.jpg'
-                        cv2.imwrite(  f'C:/Users/gaaje/PycharmProjects/person_counting/personCount/face_img/{file_name}',face_image)
+                        cv2.imwrite(  f'C:/Users/gaaje/PycharmProjects/person_counting/personCount/face_img/{file_name}',ori_person)
                         face_array = [f'{file_name}', embedding, confidence]
                         print(f"Saved face image for track_id {track_id} with confidence {confidence:.2f}")
 
@@ -352,10 +361,10 @@ def filter_store_face():
 
                  for person_id, person_data in person_enter.items():
                      if 'face' in person_data and person_data['face']:
-                         all_embeddings.extend([(person_id, embeddings[1]) for embeddings in person_data['face']])
+                         all_embeddings.extend([(person_id, normalize(embeddings[1])) for embeddings in person_data['face']])
 
 
-                 best_match = batch_compare(np.array(best_face[1]), all_embeddings)
+                 best_match = batch_compare(normalize(best_face[1]), all_embeddings)
 
                  if best_match is not None:
                      matched_person_id, min_distance = best_match
@@ -397,8 +406,8 @@ def batch_compare(current_embedding, all_embeddings, threshold = 0.5):
 
 
 
-# def normalize(embedding):
-#     return embedding / np.linalg.norm(embedding)
+def normalize(embedding):
+     return embedding / np.linalg.norm(embedding)
 
 
 def encode_frame(frame):

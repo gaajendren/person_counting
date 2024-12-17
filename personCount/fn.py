@@ -26,16 +26,12 @@ def mouse_coordinate(event, x, y, flags, param):
       print(position)
 
 def text_count(person_enter, person_exit, width, frame):
-   count_entered = sum(1 for person in person_enter if person["entered"])
 
-
-   count_exited = sum(1 for person in person_exit if person["entered"])
-
-
-   count = count_entered - count_exited
+   count = person_enter - person_exit
 
    if count < 0:
       count = 0
+      
    text = f'People Count: {count}'
    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_PLAIN, 2, 2)[0]
    text_x = width - text_size[0] + 40
