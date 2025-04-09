@@ -1,11 +1,11 @@
 import json
-
 from torch.nn.functional import embedding
-
 from personCount.Database.occupancy import Occupancy
 from personCount.Database.person_img import PersonEnter
 from personCount.Database.exit_person import PersonExit
-from datetime import date, datetime
+from personCount.Database.setting import Setting
+
+from datetime import date,time, datetime
 from personCount.Database.init import db
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,8 +14,6 @@ def add_record(count):
     try:
 
         occupancy_record = Occupancy.query.filter_by(Date=date.today()).first()
-
-
 
         if occupancy_record:
 
@@ -43,12 +41,13 @@ def add_record(count):
 
 
 
-def upload_face_enter(track_id, best_face):
+def upload_face_enter(track_id, best_face, img):
 
     try:
         print(f"Uploading PersonEnter with track_id: {track_id}")
-        embedding_str = json.dumps(best_face[1])
-        new_data = PersonEnter(track_id=track_id,embedding=embedding_str, img=best_face[0], timestamp=datetime.now())
+        embedding_list = best_face[0].tolist()
+        embedding_str = json.dumps(embedding_list)
+        new_data = PersonEnter(track_id=track_id,embedding=embedding_str, img=img, timestamp=datetime.now())
         db.session.add(new_data)
         db.session.commit()
         print('sucess-update')
@@ -81,13 +80,14 @@ def update_face_enter(enter_person_id, exit_id):
 
 
 
-def upload_face_exit(track_id, best_face, enter_person_id ):
+def upload_face_exit(track_id, best_face, enter_person_id , filename):
 
     try:
 
         print(f"Uploading PersonExit with track_id: {track_id}")
-        embedding_str = json.dumps( best_face[1])
-        new_data = PersonExit(track_id=track_id , embedding= embedding_str ,img=best_face[0] ,timestamp=datetime.now())
+        embedding_list = best_face[0].tolist()
+        embedding_str = json.dumps(embedding_list)
+        new_data = PersonExit(track_id=track_id , embedding= embedding_str ,img=filename,timestamp=datetime.now())
         db.session.add(new_data)
         db.session.commit()
 
@@ -103,6 +103,23 @@ def upload_face_exit(track_id, best_face, enter_person_id ):
                     print("enter_person_id is None, skipping update.")
             else:
                 print(f"No matching PersonExit found for track_id {track_id}")
+
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        print(f"Database error occurred: {e}")
+
+    except Exception as e:
+        print(f'An unexpected error occurred: {e}')
+
+
+
+def update_flask_config():
+    try:
+        setting = Setting.query.first()
+        if setting:
+            return setting.roi, setting.exit_roi, setting.start_time, setting.end_time
+        return None, None
+
 
     except SQLAlchemyError as e:
         db.session.rollback()
