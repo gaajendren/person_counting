@@ -117,7 +117,7 @@ def update_flask_config():
     try:
         setting = Setting.query.first()
         if setting:
-            return setting.roi, setting.exit_roi, setting.start_time, setting.end_time
+            return setting.roi, setting.exit_roi, setting.start_time, setting.end_time, setting.is_manual
         return None, None
 
 

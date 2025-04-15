@@ -9,4 +9,5 @@ class Setting(db.Model):
     exit_roi = db.Column(db.String(255), nullable=False)
     end_time = db.Column(db.Time, nullable=False)
     start_time = db.Column(db.Time, nullable=False)
+    is_manual = db.Column(db.Integer, nullable=False)
 

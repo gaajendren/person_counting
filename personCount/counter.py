@@ -1,33 +1,27 @@
 import base64
 import math
-import os
 import queue
-import shutil
 import threading
+import time as timer
+from collections import defaultdict
 from queue import Queue
+from threading import Lock
 import cv2
-import numpy as np
+import onnxruntime as ort
 from apscheduler.schedulers.background import BackgroundScheduler
-from deepface.DeepFace import represent
-from flask import Flask, Response, send_from_directory
+from flask import Flask, send_from_directory
 from flask_cors import CORS, cross_origin
 from flask_socketio import SocketIO
 from tensorflow.python.util.numpy_compat import np_array
 from ultralytics import YOLO
+from ffmpegcv import VideoCaptureStreamRT
+import personCount.config as config
 from personCount.Database.init import *
+from personCount.Yunet.yunet import YuNet
 from personCount.config import *
 from personCount.controller import *
 from personCount.fn import *
-from personCount.Yunet.yunet import YuNet
 from personCount.sort.sort import *
-from datetime import datetime
-import time as timer
-import onnxruntime as ort
-from scipy.spatial.distance import cosine
-from collections import defaultdict
-from threading import Lock
-import personCount.config as config
-
 
 app = Flask(__name__)
 
@@ -38,20 +32,27 @@ init_db(app)
 
 scheduler = BackgroundScheduler()
 
-modal = YOLO('/trained_yolo_model/yolov8s.pt')
+cv2.ocl.setUseOpenCL(True)
+
+modal = YOLO("C:/Users/gaaje/PycharmProjects/person_counting/personCount/trained_yolo_model/yolov8s.onnx")
+
 
 track_enter = Sort(max_age=20)
 track_exit = Sort(max_age=20)
 
+providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
-face_recognizer = ort.InferenceSession(f"{absolute_path}/Onnx/mobilefacenet.onnx")
+face_recognizer = ort.InferenceSession(f"{absolute_path}/Onnx/mobilefacenet.onnx" , providers=providers)
+
 
 detector = YuNet(
     f"{absolute_path}/Yunet/face_detection_yunet_2023mar.onnx",
     (320, 320),
     confThreshold=0.8,
     nmsThreshold=0.3,
-    topK=5000)
+    topK=5000,
+    backendId=cv2.dnn.DNN_BACKEND_OPENCV,
+    targetId=cv2.dnn.DNN_TARGET_OPENCL)
 
 
 person_enter = {}
@@ -66,11 +67,6 @@ image_count = 0
 
 face_queue = Queue()
 save_face = Queue()
-
-latest_enter_frame = None
-latest_exit_frame = None
-
-counting_active = True
 
 error = None
 
@@ -91,8 +87,13 @@ unchecked_track_id_exit = []
 with app.app_context():
     initial_config()
 
-def is_within_counting_time():
+latest_enter_frame = None
+latest_exit_frame = None
+frame_lock = Lock()
 
+start = timer.perf_counter()
+
+def is_within_counting_time():
     now = datetime.now().time()
     if config.START_TIME > config.END_TIME:
         return now >= config.START_TIME or now <= config.END_TIME
@@ -100,17 +101,21 @@ def is_within_counting_time():
         return config.START_TIME <= now <= config.END_TIME
 
 
+
 def background_image_process(way):
-    global counting_active, enter_frame_count, exit_frame_count, error
+    global  enter_frame_count, exit_frame_count, error, start
 
     if way == 'enter':
-        screen = cv2.VideoCapture(absolute_path + camera_enter)
-        screen.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
+        screen = cv2.VideoCapture(
+            'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/Channels/101 latency=0 ! '
+            'rtph264depay ! h264parse ! '
+            'd3d11h264dec  ! videoconvert ! '
+            'video/x-raw,format=BGR ! '
+            'appsink sync=false',
+            cv2.CAP_GSTREAMER
+        )
     else:
-        screen = cv2.VideoCapture(absolute_path + camera_exit)
-        screen.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
-
-    screen.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        screen = cv2.VideoCapture(camera_exit)
 
     if not screen.isOpened():
         raise RuntimeError("Error: Could not open video source.")
@@ -120,16 +125,26 @@ def background_image_process(way):
 
         if not success:
             error = 'Error: Could not read video source.'
+            end = timer.perf_counter()
+            elapsed_time = end - start
+            print(f"Elapsed time: {elapsed_time} seconds")
             print(error)
 
             if way == 'enter':
-                screen = cv2.VideoCapture(absolute_path + camera_enter , apiPreference=cv2.CAP_FFMPEG)
-                screen.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
-                screen.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                screen = cv2.VideoCapture(
+                     'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/Channels/101 latency=0 ! '
+                     'rtph264depay ! h264parse ! '
+                     'd3d11h264dec ! videoconvert ! '
+                     'video/x-raw,format=BGR ! appsink sync=false',
+                    cv2.CAP_GSTREAMER
+                )
             else:
-                screen = cv2.VideoCapture(absolute_path + camera_exit , apiPreference=cv2.CAP_FFMPEG)
-                screen.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY)
-                screen.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                screen = cv2.VideoCapture( camera_exit)
+
+
+            if not screen.isOpened():
+                raise RuntimeError("Error: Could not open video source.")
+
             continue
 
         if way == 'enter':
@@ -140,19 +155,21 @@ def background_image_process(way):
         if skip:
             continue
 
-        if is_within_counting_time():
+        if is_within_counting_time() and config.is_auto:
+            config.counting_active = True
+
             if way == 'enter':
                 person_counting(frame, way, person_enter, track_enter)
             else:
                 person_counting(frame, way, person_exit, track_exit)
         else:
-            counting_active = False
+            config.counting_active = False
             print('no')
             continue
 
 
 def person_counting(frame, way, person, track):
-    global person_enter, person_exit, latest_enter_frame, latest_exit_frame, counting_active, socketio, person_count, image_count, person_count_enter, person_count_exit,unchecked_track_id_exit,unchecked_track_id_enter
+    global person_enter, person_exit, latest_enter_frame, latest_exit_frame, socketio, person_count, image_count, person_count_enter, person_count_exit, unchecked_track_id_exit, unchecked_track_id_enter
 
     resized_frame = aspect_ratio_resize(frame)
     ori_frame = resized_frame.copy()
@@ -203,7 +220,6 @@ def person_counting(frame, way, person, track):
                     else:
                         continue
 
-
                 if line[0][0] < x2 < line[1][0] and y2 > line[0][1] and person[track_id]["entered"] == False:
 
                     if way == 'enter':
@@ -237,22 +253,22 @@ def person_counting(frame, way, person, track):
 
                         face_queue.put((track_id, person_image, way))
 
-                update_check(person,way)
+                update_check(person, way)
 
-                cv2.putText(resized_frame, str(track_id), (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), thickness=2)
-
-
+                cv2.putText(resized_frame, str(track_id), (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255),
+                            thickness=2)
 
             cv2.polylines(resized_frame, [np.array(r_io)], True, (0, 255, 255), thickness=1)
 
         cv2.line(resized_frame, line[0], line[1], (0, 255, 0), thickness=2)
 
-        if way == 'enter':
-            latest_enter_frame = resized_frame
-        else:
-            latest_exit_frame = resized_frame
+        with frame_lock:
+            if way == 'enter':
+                latest_enter_frame = resized_frame
+            else:
+                latest_exit_frame = resized_frame
 
-        person_count = text_count(person_count_enter, person_count_exit, width, resized_frame)
+        person_count = text_count(person_count_enter, person_count_exit)
 
         socketio.emit('person_count', {'count': person_count, })
 
@@ -261,9 +277,8 @@ def person_counting(frame, way, person, track):
 
 
 def update_check(person, way):
-    global unchecked_track_id_enter,unchecked_track_id_exit
+    global unchecked_track_id_enter, unchecked_track_id_exit
 
-    print('it update_check')
     with counter_lock:
         unchecked_track_id = (unchecked_track_id_enter if way == 'enter' else unchecked_track_id_exit)
 
@@ -277,9 +292,7 @@ def update_check(person, way):
                 save_face.put((track_id, person, way))
 
 
-
-def get_mobilefacenet_embedding(face_img):
-
+def get_mobileFacenet_embedding(face_img):
     try:
 
         face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
@@ -305,10 +318,11 @@ def face_detection():
 
             print(f"Processing face data for track_id {track_id} in {way} direction...")
 
-            if (way == 'enter' and person_enter[track_id]["checked"]) or (way == 'exit' and person_exit[track_id]["checked"]):
+            if (way == 'enter' and person_enter[track_id]["checked"]) or (
+                    way == 'exit' and person_exit[track_id]["checked"]):
                 with counter_lock:
-                   del (active_face_tracks_enter if way == 'enter' else active_face_tracks_exit)[track_id]
-                   face_queue.task_done()
+                    del (active_face_tracks_enter if way == 'enter' else active_face_tracks_exit)[track_id]
+                    face_queue.task_done()
                 continue
 
             h, w = face_image.shape[:2]
@@ -324,13 +338,12 @@ def face_detection():
 
                     try:
 
-                        embedding =  get_mobilefacenet_embedding(cropped_face)
+                        embedding = get_mobileFacenet_embedding(cropped_face)
 
                         image_count += 1
                         face_array = [embedding, confidence]
 
                         if way == 'enter':
-
                             with counter_lock:
                                 enter_embeddings = np.vstack([enter_embeddings, normalize(embedding)])
                                 enter_ids.append(track_id)
@@ -362,7 +375,7 @@ def face_detection():
 
 
 def filter_store_face():
-    global enter_embeddings,enter_ids
+    global enter_embeddings, enter_ids
     while True:
         try:
             track_id, person, way = save_face.get(block=True)
@@ -372,13 +385,9 @@ def filter_store_face():
                 continue
 
             file_name = f'{track_id}{image_count}{way}.jpg'
-            cv2.imwrite(f'{absolute_path }/person_img/{file_name}', person[track_id]['img'])
+            cv2.imwrite(f'{absolute_path}/person_img/{file_name}', person[track_id]['img'])
 
-            # for face in person[track_id]['face']:
-                # person[track_id]['face'] = []
-                # person[track_id]['face'].append(best_face)
-
-            best_face = max( person[track_id]['face'], key=lambda x: x[1])
+            best_face = max(person[track_id]['face'], key=lambda x: x[1])
 
             if person is person_enter:
                 with app.app_context():
@@ -391,11 +400,11 @@ def filter_store_face():
 
                 if matched_person_id != -1:
                     with app.app_context():
-                        print(f"Uploading face data for exit: track_id {track_id}, matched with person_id {matched_person_id}")
+                        print(
+                            f"Uploading face data for exit: track_id {track_id}, matched with person_id {matched_person_id}")
                         upload_face_exit(track_id, best_face, int(matched_person_id), file_name)
 
                         with counter_lock:
-
                             mask = np.array(enter_ids) != matched_person_id
                             enter_embeddings = enter_embeddings[mask]
                             enter_ids = list(np.array(enter_ids)[mask])
@@ -403,8 +412,7 @@ def filter_store_face():
                         del person_enter[int(matched_person_id)]
                         del person_exit[track_id]
                 else:
-                    upload_face_exit(track_id, best_face, enter_person_id=None, filename =file_name)
-
+                    upload_face_exit(track_id, best_face, enter_person_id=None, filename=file_name)
 
             save_face.task_done()
 
@@ -416,7 +424,6 @@ def filter_store_face():
 
 def batch_compare(current_embedding, threshold=0.4):
     with counter_lock:
-
         similarities = np.dot(enter_embeddings, current_embedding)
         best_idx = np.argmax(similarities)
         best_sim = similarities[best_idx]
@@ -432,19 +439,9 @@ def normalize(embedding):
     return embedding / np.linalg.norm(embedding)
 
 
-MAX_FPS = 10
-FRAME_INTERVAL = 1.0 / MAX_FPS
-
-
 def encode_frame(frame):
-
     try:
-
-        _, buffer = cv2.imencode('.jpg', frame, [
-            cv2.IMWRITE_JPEG_QUALITY, 60,
-            cv2.IMWRITE_JPEG_OPTIMIZE, 1,
-            cv2.IMWRITE_JPEG_PROGRESSIVE, 1
-        ])
+        _, buffer = cv2.imencode('.jpg', frame)
         return base64.b64encode(buffer).decode('utf-8')
     except Exception as e:
         print(f"Encoding error: {e}")
@@ -452,37 +449,30 @@ def encode_frame(frame):
 
 
 def generate_video(way):
-
     global latest_enter_frame, latest_exit_frame
 
-    last_frame_time = timer.time()
+    target_fps = 30
+    frame_interval = 1.0 / target_fps
 
-    while counting_active:
+    while config.counting_active:
         try:
-            # Get current frame
-            frame = latest_enter_frame if way == 'enter' else latest_exit_frame
-            if frame is None:
-                timer.sleep(0.01)
-                continue
+            start_time = time.time()
 
-            # Frame rate control
-            current_time = timer.time()
-            elapsed = current_time - last_frame_time
-            if elapsed < FRAME_INTERVAL:
-                timer.sleep(FRAME_INTERVAL - elapsed)
-                continue
-            last_frame_time = current_time
+            with frame_lock:
+                frame = latest_enter_frame if way == 'enter' else latest_exit_frame
 
-            # Encode and send
-            frame_bytes = encode_frame(frame)
-            if frame_bytes:
-                socketio.emit(f'video_frame_{way}', {'frame': frame_bytes})
+            if frame is not None:
+                _, buffer = cv2.imencode('.jpg', frame)
+                frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                socketio.emit(f'video_frame_{way}', {'frame': frame_b64})
 
-            timer.sleep(0.001)
+            # Maintain stable FPS
+            elapsed = time.time() - start_time
+            time.sleep(max(0, frame_interval - elapsed))
 
         except Exception as e:
-            print(f"Stream error ({way}): {e}")
-            timer.sleep(1)  # Prevent tight error loop
+            print(f"Stream error ({way}): {str(e)}")
+            time.sleep(0.5)
 
 
 def scheduled_task():
@@ -490,7 +480,7 @@ def scheduled_task():
         add_record(person_count)
 
 
-scheduler.add_job(scheduled_task, trigger='cron', hour='8-23,0-4', minute='*/1')
+scheduler.add_job(scheduled_task, trigger='cron', hour='8-23,0-4', minute='*/15')
 if not scheduler.running:
     scheduler.start()
 
@@ -510,16 +500,15 @@ def serve_person_img(filename):
 @app.route('/frame_update', methods=['GET'])
 @cross_origin(origins="http://library_occupancy.test")
 def frame():
-
     enter_frame = encode_frame(latest_enter_frame)
     exit_frame = encode_frame(latest_exit_frame)
 
-    return {'frame' : [enter_frame,exit_frame]}
+    return {'frame': [enter_frame, exit_frame]}
 
 
 @app.route('/current_status', methods=['GET'])
 def status():
-    if counting_active is False:
+    if config.counting_active is False and config.is_auto is True:
         return f"Counting only start {START_TIME} until {END_TIME}"
     if error is not None:
         return f"{error}"
@@ -529,35 +518,44 @@ def status():
 @app.route('/setting_update', methods=['POST'])
 def handle_settings_update():
     with app.app_context():
-        roi, exit_roi , startTime, endTime = update_flask_config()
+        roi, exit_roi, startTime, endTime, is_manual = update_flask_config()
 
-    if roi and exit_roi and startTime and endTime:
+    if roi and exit_roi and startTime and endTime and is_manual:
         with app.app_context():
-            update_config(roi, exit_roi, startTime, endTime )
+            update_config(roi, exit_roi, startTime, endTime, is_manual)
 
 
-@socketio.on('request_video_feed')
-def handle_video_feed_request(data):
-    way = data.get('way', 'enter')
+@app.route('/manual_start', methods=['POST'])
+def handle_auto_start(data):
+    with app.app_context():
+        if data == 'start':
+           config.is_auto = True
+        elif data == 'end':
+           config.is_auto = False
 
-    if not counting_active:
+
+@socketio.on('request_video_feeds')
+def handle_video_feeds(data):
+    ways = data.get('ways', ['enter', 'exit'])
+
+    if not config.counting_active:
         return {'status': 'offline'}
 
-    if not hasattr(handle_video_feed_request, 'active_threads'):
-        handle_video_feed_request.active_threads = {'enter': None, 'exit': None}
+    # Start thread for each requested stream
+    for way in ways:
+        if not hasattr(handle_video_feeds, 'threads'):
+            handle_video_feeds.threads = {}
 
-    if handle_video_feed_request.active_threads[way] is None or not handle_video_feed_request.active_threads[way].is_alive():
-        thread = threading.Thread(target=generate_video, args=(way,), daemon=True)
-        thread.start()
-        handle_video_feed_request.active_threads[way] = thread
+        if way not in handle_video_feeds.threads or not handle_video_feeds.threads[way].is_alive():
+            thread = threading.Thread(target=generate_video, args=(way,), daemon=True)
+            thread.start()
+            handle_video_feeds.threads[way] = thread
 
 
 
 if __name__ == '__main__':
-
-
     threading.Thread(target=background_image_process, args=('enter',), daemon=True).start()
-    threading.Thread( target=background_image_process, args=('exit',), daemon=True).start()
+    threading.Thread(target=background_image_process, args=('exit',), daemon=True).start()
     threading.Thread(target=face_detection, daemon=True).start()
     threading.Thread(target=filter_store_face, daemon=True).start()
     socketio.run(app, host='127.0.0.1', port=5000)
