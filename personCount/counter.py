@@ -4,6 +4,7 @@ import queue
 import threading
 import time as timer
 from collections import defaultdict
+from flask import jsonify
 from queue import Queue
 from threading import Lock
 import cv2
@@ -37,12 +38,24 @@ cv2.ocl.setUseOpenCL(True)
 modal = YOLO("C:/Users/gaaje/PycharmProjects/person_counting/personCount/trained_yolo_model/yolov8s.onnx")
 
 
-track_enter = Sort(max_age=20)
-track_exit = Sort(max_age=20)
+track_enter = Sort(max_age=10)
+track_exit = Sort(max_age=10)
 
-providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+options = ort.SessionOptions()
+options.enable_mem_pattern = True
+options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 
-face_recognizer = ort.InferenceSession(f"{absolute_path}/Onnx/mobilefacenet.onnx" , providers=providers)
+
+providers = [
+    ('DmlExecutionProvider', {
+        'device_id': 0,
+        'device_type': 1,
+        'tunable_op_enable': True,
+        'tunable_op_tuning_enable': True
+    })
+]
+
+face_recognizer = ort.InferenceSession(f"{absolute_path}/Onnx/mobilefacenet.onnx", sess_options=options , providers=providers)
 
 
 detector = YuNet(
@@ -106,16 +119,9 @@ def background_image_process(way):
     global  enter_frame_count, exit_frame_count, error, start
 
     if way == 'enter':
-        screen = cv2.VideoCapture(
-            'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/Channels/101 latency=0 ! '
-            'rtph264depay ! h264parse ! '
-            'd3d11h264dec  ! videoconvert ! '
-            'video/x-raw,format=BGR ! '
-            'appsink sync=false',
-            cv2.CAP_GSTREAMER
-        )
+        screen = cv2.VideoCapture(config.test_video_enter)
     else:
-        screen = cv2.VideoCapture(camera_exit)
+        screen = cv2.VideoCapture(config.test_video_exit)
 
     if not screen.isOpened():
         raise RuntimeError("Error: Could not open video source.")
@@ -131,15 +137,9 @@ def background_image_process(way):
             print(error)
 
             if way == 'enter':
-                screen = cv2.VideoCapture(
-                     'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/Channels/101 latency=0 ! '
-                     'rtph264depay ! h264parse ! '
-                     'd3d11h264dec ! videoconvert ! '
-                     'video/x-raw,format=BGR ! appsink sync=false',
-                    cv2.CAP_GSTREAMER
-                )
+                screen = cv2.VideoCapture(config.test_video_enter)
             else:
-                screen = cv2.VideoCapture( camera_exit)
+                screen = cv2.VideoCapture(config.test_video_exit)
 
 
             if not screen.isOpened():
@@ -155,7 +155,11 @@ def background_image_process(way):
         if skip:
             continue
 
-        if is_within_counting_time() and config.is_auto:
+        with config_lock:
+            auto = config.is_auto
+            within = is_within_counting_time()
+
+        if within and auto:
             config.counting_active = True
 
             if way == 'enter':
@@ -164,13 +168,12 @@ def background_image_process(way):
                 person_counting(frame, way, person_exit, track_exit)
         else:
             config.counting_active = False
-            print('no')
             continue
 
 
 def person_counting(frame, way, person, track):
     global person_enter, person_exit, latest_enter_frame, latest_exit_frame, socketio, person_count, image_count, person_count_enter, person_count_exit, unchecked_track_id_exit, unchecked_track_id_enter
-
+    cv2.setUseOptimized(True)
     resized_frame = aspect_ratio_resize(frame)
     ori_frame = resized_frame.copy()
     height, width, _ = resized_frame.shape
@@ -236,6 +239,7 @@ def person_counting(frame, way, person, track):
                     person[track_id]["entered"] = True
 
                 else:
+                    print(f"ur are correct")
 
                     if not person[track_id]["entered"]:
                         # face start
@@ -249,13 +253,15 @@ def person_counting(frame, way, person, track):
                         print(f"Adding face image for person in the queue {track_id}...")
 
                         with counter_lock:
+                            print(f'{way} {(active_face_tracks_enter if way == 'enter' else active_face_tracks_exit)[track_id]}')
                             (active_face_tracks_enter if way == 'enter' else active_face_tracks_exit)[track_id] += 1
+                            print(f'{way} {(active_face_tracks_enter if way == 'enter' else active_face_tracks_exit)[track_id]}')
 
                         face_queue.put((track_id, person_image, way))
 
                 update_check(person, way)
 
-                cv2.putText(resized_frame, str(track_id), (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255),
+                cv2.putText(resized_frame, str(track_id), (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 0),
                             thickness=2)
 
             cv2.polylines(resized_frame, [np.array(r_io)], True, (0, 255, 255), thickness=1)
@@ -286,7 +292,9 @@ def update_check(person, way):
             return
 
         for track_id in unchecked_track_id:
+            print(f'{track_id}')
             if track_id not in (active_face_tracks_enter if way == 'enter' else active_face_tracks_exit):
+                print(f'Not_in {track_id}')
                 person[track_id]['checked'] = True
                 unchecked_track_id.remove(track_id)
                 save_face.put((track_id, person, way))
@@ -321,9 +329,10 @@ def face_detection():
             if (way == 'enter' and person_enter[track_id]["checked"]) or (
                     way == 'exit' and person_exit[track_id]["checked"]):
                 with counter_lock:
+
                     del (active_face_tracks_enter if way == 'enter' else active_face_tracks_exit)[track_id]
                     face_queue.task_done()
-                continue
+                continue #check here
 
             h, w = face_image.shape[:2]
             detector.setInputSize((w, h))
@@ -332,7 +341,9 @@ def face_detection():
 
             for face in faces:
                 confidence = face[-1]
-                if confidence >= 0.9:
+                if not (person_enter[track_id]['face'] if way == 'enter' else person_exit[track_id]['face']):
+                    confidence = 0.9 #recheck
+                if confidence >= 0.9: #make it
                     x1, y1, w, h = [int(v) for v in face[:4]]
                     cropped_face = face_image[y1:y1 + h, x1:x1 + w]
 
@@ -360,6 +371,7 @@ def face_detection():
 
             with counter_lock:
                 if (active_face_tracks_enter[track_id] if way == 'enter' else active_face_tracks_exit[track_id]) == 1:
+                    print(f"delete2")
                     if way == 'enter':
                         del active_face_tracks_enter[track_id]
                     else:
@@ -484,7 +496,7 @@ scheduler.add_job(scheduled_task, trigger='cron', hour='8-23,0-4', minute='*/15'
 if not scheduler.running:
     scheduler.start()
 
-PERSON_IMG_FOLDER = r"D:/laragon/www/PersonCouting/personCount/person_img"
+PERSON_IMG_FOLDER = r"C:/Users/gaaje/PycharmProjects/person_counting/personCount/person_img"
 
 # Route to serve files from 'person_img' folder
 @app.route('/person_img/<path:filename>')
@@ -515,14 +527,12 @@ def status():
     return f'success'
 
 
-@app.route('/setting_update', methods=['POST'])
+@app.route('/setting_update', methods=['GET'])
+@cross_origin(origins="http://library_occupancy.test")
 def handle_settings_update():
     with app.app_context():
-        roi, exit_roi, startTime, endTime, is_manual = update_flask_config()
-
-    if roi and exit_roi and startTime and endTime and is_manual:
-        with app.app_context():
-            update_config(roi, exit_roi, startTime, endTime, is_manual)
+        config.update_config()
+        return jsonify({"message": "Settings updated successfully"}), 200
 
 
 @app.route('/manual_start', methods=['POST'])

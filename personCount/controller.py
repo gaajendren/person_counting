@@ -116,9 +116,12 @@ def upload_face_exit(track_id, best_face, enter_person_id , filename):
 def update_flask_config():
     try:
         setting = Setting.query.first()
+        print('init setting database')
         if setting:
+            print('success setting database')
+            print(f"Fetched values: roi={setting.roi}, exit_roi={setting.exit_roi}, start_time={setting.start_time}, end_time={setting.end_time}, is_manual={setting.is_manual}")
             return setting.roi, setting.exit_roi, setting.start_time, setting.end_time, setting.is_manual
-        return None, None
+        return None, None, None, None, None
 
 
     except SQLAlchemyError as e:
