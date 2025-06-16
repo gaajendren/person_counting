@@ -13,7 +13,7 @@ def aspect_ratio_resize(frame, width = 640):
 
 def frame_limit_skip(count):
 
-   r = 5  #here it say how many skip
+   r = 2  #here it say how many skip
 
    count += 1
    if count % r != 0:

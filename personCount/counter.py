@@ -1,4 +1,7 @@
 import base64
+import win32api
+import win32con
+import win32process
 import math
 import queue
 import threading
@@ -26,7 +29,7 @@ from personCount.sort.sort import *
 
 app = Flask(__name__)
 
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 CORS(app, resources={r"/*": {"origins": "http://127.0.0.1:8000", "supports_credentials": True}})
 
 init_db(app)
@@ -104,7 +107,6 @@ latest_enter_frame = None
 latest_exit_frame = None
 frame_lock = Lock()
 
-start = timer.perf_counter()
 
 def is_within_counting_time():
     now = datetime.now().time()
@@ -116,44 +118,66 @@ def is_within_counting_time():
 
 
 def background_image_process(way):
-    global  enter_frame_count, exit_frame_count, error, start
+    global  enter_frame_count, exit_frame_count, error
 
     if way == 'enter':
-        screen = cv2.VideoCapture(config.test_video_enter)
+        screen = cv2.VideoCapture(
+            'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/Channels/101 latency=0 !'
+            'rtph264depay ! h264parse ! queue !'
+            'd3d11h264dec ! queue ! videoconvert ! '
+            'video/x-raw,format=BGR !  appsink sync=false',
+            cv2.CAP_GSTREAMER
+        )
+        # screen = cv2.VideoCapture('rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/channels/101' , cv2.CAP_FFMPEG)
     else:
-        screen = cv2.VideoCapture(config.test_video_exit)
+        screen = cv2.VideoCapture(
+            'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.64:554/Streaming/Channels/101 latency=0 !'
+            'rtph264depay ! h264parse ! queue !'
+            'd3d11h264dec ! queue ! videoconvert ! '
+            'video/x-raw,format=BGR ! appsink sync=false',
+            cv2.CAP_GSTREAMER
+        )
+
+        # screen = cv2.VideoCapture('rtsp://admin:555888Gaa$@192.168.1.64:554/Streaming/channels/101' , cv2.CAP_FFMPEG)
 
     if not screen.isOpened():
-        raise RuntimeError("Error: Could not open video source.")
+        error = 'Error: Could not open video source.'
+        print(error)
 
     while True:
         success, frame = screen.read()
 
         if not success:
             error = 'Error: Could not read video source.'
-            end = timer.perf_counter()
-            elapsed_time = end - start
-            print(f"Elapsed time: {elapsed_time} seconds")
+
             print(error)
 
             if way == 'enter':
-                screen = cv2.VideoCapture(config.test_video_enter)
+                screen = cv2.VideoCapture(
+                     'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/Channels/101 latency=0  ! '
+                    'rtph264depay ! h264parse ! queue !'
+                    'd3d11h264dec ! queue ! videoconvert ! '
+                    'video/x-raw,format=BGR !  appsink sync=false',
+                    cv2.CAP_GSTREAMER
+                )
+                # screen = cv2.VideoCapture('rtsp://admin:555888Gaa$@192.168.1.103:554/Streaming/channels/101' , cv2.CAP_FFMPEG)
             else:
-                screen = cv2.VideoCapture(config.test_video_exit)
+                screen = cv2.VideoCapture(
+                    'rtspsrc location=rtsp://admin:555888Gaa$@192.168.1.64:554/Streaming/Channels/101 latency=0 !'
+                    'rtph264depay ! h264parse ! queue !'
+                    'd3d11h264dec ! queue ! videoconvert ! '
+                    'video/x-raw,format=BGR !  appsink sync=false',
+                    cv2.CAP_GSTREAMER
+                )
+                # screen = cv2.VideoCapture('rtsp://admin:555888Gaa$@192.168.1.64:554/Streaming/channels/101' , cv2.CAP_FFMPEG)
 
 
             if not screen.isOpened():
-                raise RuntimeError("Error: Could not open video source.")
+                error = 'Error: Could not open video source.'
+                print(error)
 
             continue
 
-        if way == 'enter':
-            skip, enter_frame_count = frame_limit_skip(enter_frame_count)
-        else:
-            skip, exit_frame_count = frame_limit_skip(exit_frame_count)
-
-        if skip:
-            continue
 
         with config_lock:
             auto = config.is_auto
@@ -166,6 +190,7 @@ def background_image_process(way):
                 person_counting(frame, way, person_enter, track_enter)
             else:
                 person_counting(frame, way, person_exit, track_exit)
+
         else:
             config.counting_active = False
             continue
@@ -173,7 +198,7 @@ def background_image_process(way):
 
 def person_counting(frame, way, person, track):
     global person_enter, person_exit, latest_enter_frame, latest_exit_frame, socketio, person_count, image_count, person_count_enter, person_count_exit, unchecked_track_id_exit, unchecked_track_id_enter
-    cv2.setUseOptimized(True)
+
     resized_frame = aspect_ratio_resize(frame)
     ori_frame = resized_frame.copy()
     height, width, _ = resized_frame.shape
@@ -181,22 +206,23 @@ def person_counting(frame, way, person, track):
     r_io = config.rio if way == 'enter' else config.exit_rio
 
     try:
-        results = modal(resized_frame, verbose=False, stream=True, classes=[0])
+        results = modal(resized_frame, verbose=False, stream=False, classes=[0])
         detections = np.empty((0, 5))
 
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0]
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
                 conf = math.ceil((box.conf[0] * 100)) / 100
 
-                if cv2.pointPolygonTest(np.array(r_io), (x2, y2), False) < 0:
+                if cv2.pointPolygonTest(np.array(r_io), (centroid[0], centroid[1]),False) < 0:
                     continue
 
                 currentArray = np_array([x1, y1, x2, y2, conf])
                 detections = np.vstack((detections, currentArray))
-
-                cv2.circle(resized_frame, (x2, y2), 3, (255, 0, 0), thickness=-1)
+                cv2.circle(resized_frame, (centroid[0], centroid[1]), 2, (0, 255, 0), -1)
+                cv2.circle(resized_frame, (x2, y1), 3, (255, 0, 0), -1)
                 cv2.rectangle(resized_frame, (x1, y1), (x2, y2), (0, 0, 255), thickness=2)
 
             result_tracker = track.update(detections)
@@ -206,6 +232,7 @@ def person_counting(frame, way, person, track):
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                 track_id = int(track_id)
                 centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
+                last_center = ((x1 + x2) // 2)
 
                 # start ...................................................................
 
@@ -223,7 +250,7 @@ def person_counting(frame, way, person, track):
                     else:
                         continue
 
-                if line[0][0] < x2 < line[1][0] and y2 > line[0][1] and person[track_id]["entered"] == False:
+                if line[0][0] < centroid[0] < line[1][0] and centroid[1] > line[0][1] and person[track_id]["entered"] == False:
 
                     if way == 'enter':
                         if track_id not in person_count_enter:
@@ -239,7 +266,6 @@ def person_counting(frame, way, person, track):
                     person[track_id]["entered"] = True
 
                 else:
-                    print(f"ur are correct")
 
                     if not person[track_id]["entered"]:
                         # face start
@@ -247,8 +273,8 @@ def person_counting(frame, way, person, track):
 
                         ori_person = ori_frame[y1:y2, x1:x2]
 
-                        if len(person[track_id]['img']) == 0:
-                            person[track_id]['img'] = ori_person
+                        # if len(person[track_id]['img']) == 0:
+                        person[track_id]['img'] = ori_person
 
                         print(f"Adding face image for person in the queue {track_id}...")
 
@@ -264,15 +290,19 @@ def person_counting(frame, way, person, track):
                 cv2.putText(resized_frame, str(track_id), (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 0),
                             thickness=2)
 
+
+                cv2.circle(resized_frame, (last_center,y1), 3, (255, 255, 0), -1)
+
             cv2.polylines(resized_frame, [np.array(r_io)], True, (0, 255, 255), thickness=1)
+
 
         cv2.line(resized_frame, line[0], line[1], (0, 255, 0), thickness=2)
 
-        with frame_lock:
-            if way == 'enter':
-                latest_enter_frame = resized_frame
-            else:
-                latest_exit_frame = resized_frame
+
+        if way == 'enter':
+            latest_enter_frame = resized_frame
+        else:
+            latest_exit_frame = resized_frame
 
         person_count = text_count(person_count_enter, person_count_exit)
 
@@ -463,28 +493,25 @@ def encode_frame(frame):
 def generate_video(way):
     global latest_enter_frame, latest_exit_frame
 
-    target_fps = 30
-    frame_interval = 1.0 / target_fps
+    target_fps = 4
+    frame_interval = 1 / target_fps
 
     while config.counting_active:
+        start_timer = time.time()
         try:
-            start_time = time.time()
+            frame_generate = latest_enter_frame if way == 'enter' else latest_exit_frame
 
-            with frame_lock:
-                frame = latest_enter_frame if way == 'enter' else latest_exit_frame
-
-            if frame is not None:
-                _, buffer = cv2.imencode('.jpg', frame)
-                frame_b64 = base64.b64encode(buffer).decode('utf-8')
-                socketio.emit(f'video_frame_{way}', {'frame': frame_b64})
-
-            # Maintain stable FPS
-            elapsed = time.time() - start_time
-            time.sleep(max(0, frame_interval - elapsed))
+            if frame_generate is not None:
+                _, buffer = cv2.imencode('.jpg', frame_generate, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                socketio.emit(f'video_frame_{way}', buffer.tobytes())
 
         except Exception as e:
             print(f"Stream error ({way}): {str(e)}")
-            time.sleep(0.5)
+
+        elapsed = time.time() - start_timer
+        remaining = frame_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
 
 
 def scheduled_task():
@@ -543,7 +570,7 @@ def handle_auto_start(data):
         elif data == 'end':
            config.is_auto = False
 
-
+thread_lock = threading.Lock()
 @socketio.on('request_video_feeds')
 def handle_video_feeds(data):
     ways = data.get('ways', ['enter', 'exit'])
@@ -551,21 +578,33 @@ def handle_video_feeds(data):
     if not config.counting_active:
         return {'status': 'offline'}
 
+    if not hasattr(handle_video_feeds, 'threads'):
+        handle_video_feeds.threads = {}
+
     # Start thread for each requested stream
     for way in ways:
-        if not hasattr(handle_video_feeds, 'threads'):
-            handle_video_feeds.threads = {}
-
-        if way not in handle_video_feeds.threads or not handle_video_feeds.threads[way].is_alive():
-            thread = threading.Thread(target=generate_video, args=(way,), daemon=True)
-            thread.start()
-            handle_video_feeds.threads[way] = thread
+        with thread_lock:
+            if way not in handle_video_feeds.threads or not handle_video_feeds.threads[way].is_alive():
+                thread = threading.Thread(target=generate_video, args=(way,), daemon=True)
+                thread.start()
+                handle_video_feeds.threads[way] = thread
 
 
 
 if __name__ == '__main__':
-    threading.Thread(target=background_image_process, args=('enter',), daemon=True).start()
-    threading.Thread(target=background_image_process, args=('exit',), daemon=True).start()
+    video_thread = threading.Thread(target=background_image_process, args=('enter',), daemon=True)
+    video_thread.start()
+    video_thread_exit = threading.Thread(target=background_image_process, args=('exit',), daemon=True)
+    video_thread_exit.start()
     threading.Thread(target=face_detection, daemon=True).start()
     threading.Thread(target=filter_store_face, daemon=True).start()
     socketio.run(app, host='127.0.0.1', port=5000)
+
+    try:
+        handle = win32api.OpenThread(win32con.THREAD_ALL_ACCESS, False, video_thread.ident)
+        win32process.SetThreadPriority(handle, win32process.THREAD_PRIORITY_HIGHEST)
+        handle_exit = win32api.OpenThread(win32con.THREAD_ALL_ACCESS, False, video_thread_exit.ident)
+        win32process.SetThreadPriority(handle_exit, win32process.THREAD_PRIORITY_HIGHEST)
+    finally:
+        win32api.CloseHandle(handle)
+        win32api.CloseHandle(handle_exit)
